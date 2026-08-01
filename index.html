@@ -874,26 +874,38 @@ function checkWin() {
   if (won) { showWin(); return; }
   if (movesLeft <= 0) { showLose(); return; }
 
-  // Check if stuck (no moves)
-  if (!canMove()) { showLose(); return; }
+  // Verificar si hay movimientos con delay para evitar falsos game-over
+  // durante animaciones o relleno de celdas
+  setTimeout(() => {
+    if (!currentLevel) return; // ya salió del nivel
+    if (document.getElementById('g-overlay').classList.contains('show')) return; // ya hay overlay
+    if (!canMove()) { showLose(); }
+  }, 200);
 }
 
 function canMove() {
   // Si hay bombas o luces pendientes, siempre hay movimiento posible
   if (gridHasSpecial()) return true;
-  // Celdas vacías = movimiento posible
-  for(let r=0;r<4;r++) for(let c=0;c<4;c++) if(!grid[r][c]) return true;
-  // Tiles adyacentes fusionables
+
+  // Contar celdas vacías reales
+  let emptyCount = 0;
   for(let r=0;r<4;r++) for(let c=0;c<4;c++) {
     const t = grid[r][c];
-    if (!t || t.type==='rock' || t.type==='ice') continue;
-    for(const [dr,dc] of [[0,1],[1,0]]) {
+    if (t === null || t === undefined) { emptyCount++; }
+  }
+  if (emptyCount > 0) return true;
+
+  // Verificar tiles adyacentes fusionables
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) {
+    const t = grid[r][c];
+    if (!t || t.type==='rock' || t.type==='ice' || t.type==='bomb' || t.type==='luz') continue;
+    for(const [dr,dc] of [[0,1],[1,0],[0,-1],[-1,0]]) {
       const nr=r+dr, nc=c+dc;
-      if(nr<4&&nc<4&&grid[nr][nc]) {
-        const n = grid[nr][nc];
-        if ((t.type==='num'&&n.type==='num'&&t.value===n.value)||
-            (t.type==='fruit'&&n.type==='fruit'&&t.fruit===n.fruit)) return true;
-      }
+      if(nr<0||nr>=4||nc<0||nc>=4) continue;
+      const n = grid[nr][nc];
+      if(!n) return true; // celda vacía adyacente
+      if ((t.type==='num' && n.type==='num' && t.value===n.value)||
+          (t.type==='fruit' && n.type==='fruit' && t.fruit===n.fruit)) return true;
     }
   }
   return false;
@@ -1223,4 +1235,4 @@ if("serviceWorker" in navigator){
 }
 </script>
 </body>
-</html>
+</html>v
