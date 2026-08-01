@@ -633,6 +633,7 @@ function move(dir) {
     let rocks = [];
     row.forEach((t,i) => { if(t && (t.type==='rock'||t.type==='ice')) rocks.push({t,i}); });
     let merges = [];
+    let rowCombo = 0; // combo independiente por fila/columna
 
     for(let i=0;i<arr.length-1;i++) {
       const a = arr[i], b = arr[i+1];
@@ -642,14 +643,15 @@ function move(dir) {
         const newVal = a.value*2;
         score += newVal;
         comboCount++;
-        let newType = 'num';
-        let special = null;
+        rowCombo++;
 
-        // Check for bomb (3 same in chain) — simplified: if value triggers combo
-        if (comboCount >= 3 && !bombsCreated.length) {
-          special = 'bomb';
+        // Combo ×3 en la misma fila → genera BOMBA con valor actual
+        if (rowCombo >= 2 && !bombsCreated.includes('bomb-num')) {
+          arr[i] = {type:'bomb', value: newVal, isMerge:true};
+          bombsCreated.push('bomb-num');
+        } else {
+          arr[i] = {type:'num', value: newVal, isMerge:true};
         }
-        arr[i] = {type: special||'num', value: newVal, isMerge:true};
         arr.splice(i+1,1);
         merges.push(i);
         i--;
@@ -659,19 +661,22 @@ function move(dir) {
         const v = FRUIT_VALUES[a.fruit]||1;
         score += v * 10;
         comboCount++;
+        rowCombo++;
         goalProgress[a.fruit] = (goalProgress[a.fruit]||0) + 1;
-        arr[i] = {type:'fruit', fruit: a.fruit, isMerge:true};
+
+        // Combo ×3 frutas → Bomba / Combo ×4 → Luz
+        if (rowCombo >= 3 && !bombsCreated.includes('luz')) {
+          arr[i] = {type:'luz', fruit: a.fruit, isMerge:true};
+          bombsCreated.push('luz');
+        } else if (rowCombo >= 2 && !bombsCreated.includes('bomb-fruit')) {
+          arr[i] = {type:'bomb', value: v*4, isMerge:true};
+          bombsCreated.push('bomb-fruit');
+        } else {
+          arr[i] = {type:'fruit', fruit: a.fruit, isMerge:true};
+        }
         arr.splice(i+1,1);
         merges.push(i);
         i--;
-        // Check for luz (5 same)
-        if (comboCount >= 5 && !bombsCreated.includes('luz')) {
-          arr[i] = {type:'luz', fruit:a.fruit};
-          bombsCreated.push('luz');
-        } else if (comboCount >= 3 && !bombsCreated.includes('bomb')) {
-          arr[i] = {type:'bomb', value:v*2};
-          bombsCreated.push('bomb');
-        }
       }
     }
     // rebuild with rocks
@@ -739,12 +744,112 @@ function move(dir) {
   renderBoard(newCells, []);
   renderGoal();
   updateUI();
-  checkWin();
-  saveState();
+
+  // Auto-explotar bombas y luces que quedaron en el tablero
+  const hasBombs = gridHasSpecial();
+  if (hasBombs) {
+    setTimeout(() => autoExplodeSpecials(), 350);
+  } else {
+    checkWin();
+    saveState();
+  }
 }
 
 function addPts(pts) {
   score += pts;
+}
+
+function gridHasSpecial() {
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) {
+    const t = grid[r][c];
+    if (t && (t.type==='bomb' || t.type==='luz')) return true;
+  }
+  return false;
+}
+
+function autoExplodeSpecials() {
+  let anyExploded = false;
+
+  // Primero explotar todas las bombas
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) {
+    const t = grid[r][c];
+    if (t && t.type === 'bomb') {
+      anyExploded = true;
+      let pts = 0;
+      const bombVal = t.value || 16;
+      grid[r][c] = null;
+
+      // Explosión en cruz: arriba, abajo, izquierda, derecha
+      [[r-1,c],[r+1,c],[r,c-1],[r,c+1]].forEach(([nr,nc]) => {
+        if(nr>=0&&nr<4&&nc>=0&&nc<4&&grid[nr][nc]) {
+          const nt = grid[nr][nc];
+          if(nt.type==='rock') return; // rocas no se destruyen
+          if(nt.type==='num') pts += nt.value;
+          else if(nt.type==='fruit') {
+            pts += (FRUIT_VALUES[nt.fruit]||1) * 5;
+            goalProgress[nt.fruit] = (goalProgress[nt.fruit]||0) + 1;
+          }
+          grid[nr][nc] = null;
+        }
+      });
+
+      score += pts + bombVal;
+      showCombo('💥 BOMBA AUTO! +' + (pts+bombVal) + ' pts');
+    }
+  }
+
+  // Luego activar luces: eliminan todos los tiles del valor más frecuente
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) {
+    const t = grid[r][c];
+    if (t && t.type === 'luz') {
+      anyExploded = true;
+      grid[r][c] = null;
+
+      // Contar frecuencias para elegir el target más abundante
+      const freq = {};
+      for(let rr=0;rr<4;rr++) for(let cc=0;cc<4;cc++) {
+        const nt = grid[rr][cc];
+        if(!nt || nt.type==='rock' || nt.type==='ice') continue;
+        const key = nt.type==='num' ? 'n'+nt.value : 'f'+nt.fruit;
+        freq[key] = (freq[key]||0) + 1;
+      }
+      const bestKey = Object.keys(freq).sort((a,b)=>freq[b]-freq[a])[0];
+      if (!bestKey) continue;
+
+      let pts = 0, count = 0;
+      for(let rr=0;rr<4;rr++) for(let cc=0;cc<4;cc++) {
+        const nt = grid[rr][cc];
+        if(!nt) continue;
+        let match = false;
+        if(bestKey.startsWith('n') && nt.type==='num' && 'n'+nt.value===bestKey) match=true;
+        if(bestKey.startsWith('f') && nt.type==='fruit' && 'f'+nt.fruit===bestKey) {
+          match=true;
+          goalProgress[nt.fruit]=(goalProgress[nt.fruit]||0)+1;
+        }
+        if(match){ pts+=(nt.type==='num'?nt.value:(FRUIT_VALUES[nt.fruit]||1)*5); grid[rr][cc]=null; count++; }
+      }
+      score += pts;
+      showCombo('✨ LUZ AUTO! ×'+count+' eliminados +'+pts+' pts');
+    }
+  }
+
+  if (anyExploded) {
+    // Rellenar huecos tras explosión
+    addTile();
+    if(currentLevel.type==='fruit') addFruitTile();
+
+    renderBoard([],[]);
+    renderGoal();
+    updateUI();
+
+    // Si quedaron más especiales (bombas en cadena), explotar de nuevo
+    if(gridHasSpecial()) {
+      setTimeout(() => autoExplodeSpecials(), 400);
+    } else {
+      checkWin();
+      saveState();
+    }
+  }
 }
 
 function showCombo(msg) {
@@ -774,20 +879,23 @@ function checkWin() {
 }
 
 function canMove() {
+  // Si hay bombas o luces pendientes, siempre hay movimiento posible
+  if (gridHasSpecial()) return true;
+  // Celdas vacías = movimiento posible
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) if(!grid[r][c]) return true;
+  // Tiles adyacentes fusionables
   for(let r=0;r<4;r++) for(let c=0;c<4;c++) {
-    if (!grid[r][c]) return true;
     const t = grid[r][c];
-    if (t.type==='rock'||t.type==='ice') continue;
-    [[0,1],[1,0]].forEach(([dr,dc]) => {
+    if (!t || t.type==='rock' || t.type==='ice') continue;
+    for(const [dr,dc] of [[0,1],[1,0]]) {
       const nr=r+dr, nc=c+dc;
       if(nr<4&&nc<4&&grid[nr][nc]) {
         const n = grid[nr][nc];
         if ((t.type==='num'&&n.type==='num'&&t.value===n.value)||
             (t.type==='fruit'&&n.type==='fruit'&&t.fruit===n.fruit)) return true;
       }
-    });
+    }
   }
-  for(let r=0;r<4;r++) for(let c=0;c<4;c++) if(!grid[r][c]) return true;
   return false;
 }
 
