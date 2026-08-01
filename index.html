@@ -366,6 +366,15 @@ function startLevel(lvl) {
   document.getElementById('g-lvl-name').textContent='Nivel '+lvl.id;
   document.getElementById('g-lvlnum').textContent=lvl.id;
   document.getElementById('g-best').textContent = (ST.totalPts||0).toLocaleString();
+  // Movimientos: solo en cosecha. Numéricos = ilimitado
+  const movsEl = document.getElementById('g-movs');
+  if(lvl.type==='num'){
+    movsEl.textContent = '∞';
+    movsEl.parentElement.style.color='#5555AA';
+  } else {
+    movsEl.textContent = lvl.moves;
+    movsEl.parentElement.style.color='';
+  }
   document.getElementById('g-ov').classList.remove('show');
   document.getElementById('sel-banner').classList.remove('show');
   G.activePU=null; G.selectingLuz=false;
@@ -498,7 +507,14 @@ function renderGoal() {
 
 function renderHUD() {
   document.getElementById('g-score').textContent=G.score.toLocaleString();
-  document.getElementById('g-movs').textContent=G.movs;
+  const movsEl=document.getElementById('g-movs');
+  if(G.lvl && G.lvl.type==='num'){
+    movsEl.textContent='∞';
+    movsEl.style.color='#5555AA';
+  } else {
+    movsEl.textContent=G.movs;
+    movsEl.style.color=G.movs<=5?'#FF4444':'';
+  }
 }
 
 function renderPowerups() {
@@ -705,13 +721,1018 @@ function checkWin(){
   let won=false;
   if(lvl.type==='num') won=getMax()>=lvl.target;
   else won=Object.keys(lvl.fruits).every(f=>(G.progress[f]||0)>=lvl.fruits[f]);
-  // Victoria siempre tiene prioridad aunque no queden movimientos
+  // Victoria siempre tiene prioridad
   if(won){ doWin(); return; }
-  // Sin movimientos → derrota
-  if(G.movs<=0){ doLose(); return; }
-  // Verificar bloqueo con delay para dejar terminar animaciones y spawns
+  // Movimientos solo limitan niveles de COSECHA
+  if(lvl.type==='fruit' && G.movs<=0){ doLose(); return; }
+  // Verificar bloqueo real (tablero lleno sin fusiones posibles)
   setTimeout(()=>{
-    if(G.over||G.movs<=0) return;
+    if(G.over) return;
+    if(lvl.type==='fruit' && G.movs<=0){ doLose(); return; }
+    if(!canMove()){ doLose(); }
+  },400);
+}
+
+function canMove(){
+  // Si hay bombas, siempre hay movimiento (explotarán)
+  if(findBombs().length) return true;
+  // Celdas vacías
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) if(!G.grid[r][c]) return true;
+  // Fusiones posibles
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++){
+    const t=G.grid[r][c];
+    if(!t||t.t==='rock'||t.t==='bomb') continue;
+    for(const[dr,dc] of[[0,1],[1,0],[0,-1],[-1,0]]){
+      const nr=r+dr,nc=c+dc;
+      if(nr<0||nr>=4||nc<0||nc>=4) continue;
+      const n=G.grid[nr][nc];
+      if(!n) return true;
+      if(t.t==='num'&&n.t==='num'&&t.v===n.v) return true;
+      if(t.t==='fruit'&&n.t==='fruit'&&t.f===n.f) return true;
+      if(t.t==='wild'||n.t==='wild') return true;
+    }
+  }
+  return false;
+}
+
+function doWin(){
+  if(G.over) return; G.over=true;
+  const lvl=G.lvl;
+  const used=lvl.moves-G.movs;
+  const pct=used/lvl.moves;
+  const stars=pct<0.5?3:pct<0.75?2:1;
+  if(!(ST.stars[lvl.id]>stars)) ST.stars[lvl.id]=stars;
+  const pts=stars===3?1200:stars===2?800:500;
+  G.score+=pts;
+  ST.totalPts+=pts; ST.weeklyPts+=pts; ST.coins+=stars*30;
+  save();
+  document.getElementById('ov-ico').textContent='🏆';
+  document.getElementById('ov-ttl').textContent='¡Nivel completado!';
+  document.getElementById('ov-stars').innerHTML=[1,2,3].map(s=>s<=stars?'⭐':'☆').join('');
+  document.getElementById('ov-sub').textContent=`+${pts} pts · +${stars*30} 🪙`;
+  const next=LEVELS.find(l=>l.id===lvl.id+1);
+  document.getElementById('ov-next').style.display=next?'':'none';
+  document.getElementById('g-ov').classList.add('show');
+  renderHUD();
+}
+
+function doLose(){
+  if(G.over) return; G.over=true;
+  document.getElementById('ov-ico').textContent='💀';
+  document.getElementById('ov-ttl').textContent='¡Sin movimientos!';
+  document.getElementById('ov-stars').innerHTML='☆☆☆';
+  document.getElementById('ov-sub').textContent='Vuelve a intentarlo';
+  document.getElementById('ov-next').style.display='none';
+  document.getElementById('g-ov').classList.add('show');
+}
+
+function goNextLevel(){
+  const next=LEVELS.find(l=>l.id===G.lvl.id+1);
+  if(next) startLevel(next); else askBack(true);
+}
+function askBack(force){
+  if(force||G.over||confirm('¿Salir del nivel?')) showScreen('levelmap');
+}
+
+// ==================== POWER-UPS ====================
+function gainPU(id,silent){
+  ST.pu[id]=(ST.pu[id]||0)+1;
+  if(!silent) toast('¡'+({bomb:'💣 Bomba',luz:'✨ Luz',remix:'🌀 Mezclar',wild:'⭐ Wild'}[id])+' ganado!');
+  save();
+}
+
+function activatePU(id){
+  if(!ST.pu[id]) return;
+  if(G.activePU===id){ G.activePU=null; G.selectingLuz=false; document.getElementById('sel-banner').classList.remove('show'); renderBoard(); renderPowerups(); return; }
+  G.activePU=id;
+  renderPowerups();
+  if(id==='remix'){ doRemix(); return; }
+  if(id==='wild'){ doWild(); return; }
+  if(id==='luz'){
+    G.selectingLuz=true;
+    document.getElementById('sel-banner').classList.add('show');
+    renderBoard();
+    toast('Toca un tile para eliminar todos iguales');
+    return;
+  }
+  if(id==='bomb'){
+    toast('Toca una celda para explotar la bomba ahí');
+    renderBoard();
+    // el clic en celdas lo maneja el board-click handler
+  }
+}
+
+function doRemix(){
+  ST.pu.remix--; G.activePU=null;
+  const tiles=[];
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++){ if(G.grid[r][c]&&G.grid[r][c].t!=='rock'){tiles.push(G.grid[r][c]);G.grid[r][c]=null;} }
+  for(let i=tiles.length-1;i>0;i--){const j=rand(i+1);[tiles[i],tiles[j]]=[tiles[j],tiles[i]];}
+  let idx=0;
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) if(!G.grid[r][c]&&idx<tiles.length) G.grid[r][c]=tiles[idx++];
+  save(); renderAll(); toast('🌀 ¡Tablero mezclado!');
+}
+
+function doWild(){
+  ST.pu.wild--; G.activePU=null;
+  const e=empties(); if(!e.length){save();renderPowerups();return;}
+  const [r,c]=e[rand(e.length)];
+  G.grid[r][c]={t:'wild',isNew:true};
+  save(); renderBoard([[r,c]],[]); renderPowerups(); toast('⭐ Wild tile colocado!');
+}
+
+function doLuz(r,c){
+  if(!G.selectingLuz) return;
+  G.selectingLuz=false; G.activePU=null;
+  ST.pu.luz--; save();
+  document.getElementById('sel-banner').classList.remove('show');
+  const tile=G.grid[r][c];
+  if(!tile){renderAll();return;}
+  let pts=0,count=0;
+  for(let rr=0;rr<4;rr++) for(let cc=0;cc<4;cc++){
+    const nt=G.grid[rr][cc]; if(!nt) continue;
+    let match=false;
+    if(tile.t==='num'&&nt.t==='num'&&nt.v===tile.v) match=true;
+    if(tile.t==='fruit'&&nt.t==='fruit'&&nt.f===tile.f){match=true;G.progress[tile.f]=(G.progress[tile.f]||0)+1;}
+    if(match){pts+=(nt.t==='num'?nt.v:(FV[nt.f]||1)*5);G.grid[rr][cc]=null;count++;}
+  }
+  G.score+=pts;
+  spawnTile(); spawnTile();
+  showCombo('✨ ×'+count+' eliminados! +'+pts);
+  renderAll(); checkWin();
+}
+
+function manualBomb(r,c){
+  // Tocar la bomba directamente la activa
+  if(!G.grid[r][c]||G.grid[r][c].t!=='bomb') return;
+  autoBombs([[r,c]],[]);
+}
+
+// Clic en tablero para bomba manual (power-up de inventario)
+document.getElementById('board').addEventListener('click', e=>{
+  const cell=e.target.closest('.cell');
+  if(!cell) return;
+  const r=+cell.dataset.r, c=+cell.dataset.c;
+  if(G.activePU==='bomb'){
+    const t=G.grid[r][c];
+    if(t&&t.t==='rock') return;
+    ST.pu.bomb--; G.activePU=null;
+    // Explotar en esa celda + cruz
+    let pts=0;
+    if(t&&t.t!=='rock'){
+      if(t.t==='num') pts+=t.v;
+      else if(t.t==='fruit'){pts+=FV[t.f]*5;G.progress[t.f]=(G.progress[t.f]||0)+1;}
+      G.grid[r][c]=null;
+    }
+    [[r-1,c],[r+1,c],[r,c-1],[r,c+1]].forEach(([nr,nc])=>{
+      if(nr<0||nr>=4||nc<0||nc>=4) return;
+      const nt=G.grid[nr][nc];
+      if(!nt||nt.t==='rock') return;
+      if(nt.t==='num') pts+=nt.v;
+      else if(nt.t==='fruit'){pts+=FV[nt.f]*5;G.progress[nt.f]=(G.progress[nt.f]||0)+1;}
+      G.grid[nr][nc]=null;
+    });
+    G.score+=pts+30;
+    spawnTile();
+    showCombo('💥 BOMBA +'+pts+' pts');
+    save(); renderAll(); checkWin();
+  }
+});
+
+// ==================== INPUT ====================
+function bindInput(){
+  document.onkeydown=null;
+  document.onkeydown=e=>{
+    if(!document.getElementById('game').classList.contains('active')) return;
+    if(G.selectingLuz||G.activePU==='bomb') return;
+    const m={ArrowLeft:'left',ArrowRight:'right',ArrowUp:'up',ArrowDown:'down'};
+    if(m[e.key]){e.preventDefault();move(m[e.key]);}
+  };
+}
+
+let tx=0,ty=0;
+document.addEventListener('touchstart',e=>{tx=e.touches[0].clientX;ty=e.touches[0].clientY;},{passive:true});
+document.addEventListener('touchend',e=>{
+  if(!document.getElementById('game').classList.contains('active')) return;
+  if(G.selectingLuz||G.activePU==='bomb') return;
+  const dx=e.changedTouches[0].clientX-tx, dy=e.changedTouches[0].clientY-ty;
+  if(Math.max(Math.abs(dx),Math.abs(dy))<28) return;
+  if(Math.abs(dx)>Math.abs(dy)) move(dx>0?'right':'left');
+  else move(dy>0?'down':'up');
+},{passive:true});
+
+// ==================== COMBO BANNER ====================
+function showCombo(msg){
+  const b=document.getElementById('combo');
+  b.textContent=msg; b.classList.remove('show'); void b.offsetWidth; b.classList.add('show');
+}
+
+// ==================== RANKING ====================
+const FAKE=[
+  {name:'JuanRápido',pts:48320,av:'JR',col:'#7B61FF'},
+  {name:'MariaPro',pts:41100,av:'MP',col:'#00E5FF'},
+  {name:'CarlosL',pts:38800,av:'CL',col:'#FF9800'},
+  {name:'Ana_K',pts:31250,av:'AK',col:'#4CAF50'},
+  {name:'Diego22',pts:27400,av:'DJ',col:'#FF4444'},
+  {name:'SofiP',pts:22100,av:'SP',col:'#E91E63'},
+  {name:'Lucho_G',pts:18500,av:'LG',col:'#00BCD4'},
+  {name:'PatriciaCL',pts:14200,av:'PC',col:'#9C27B0'},
+  {name:'Roberto_T',pts:9800,av:'RT',col:'#607D8B'},
+  {name:'Carmen_V',pts:5400,av:'CV',col:'#795548'},
+];
+
+function buildRanking(){
+  const all=[...FAKE,{name:'Tú',pts:ST.weeklyPts||0,av:'TÚ',col:'#7B61FF',me:true}];
+  all.sort((a,b)=>b.pts-a.pts);
+  const myRank=all.findIndex(p=>p.me)+1;
+  const list=document.getElementById('rk-list'); list.innerHTML='';
+  all.slice(0,10).forEach((p,i)=>{
+    const el=document.createElement('div');
+    el.className='ri'+(p.me?' me':'');
+    const pe=i===0?'👑':i===1?'🥈':i===2?'🥉':'#'+(i+1);
+    const pc=i===0?'#FFD700':i===1?'#C0C0C0':i===2?'#CD7F32':'#aaa';
+    el.innerHTML=`<div class="ri-pos" style="color:${pc}">${pe}</div>
+      <div class="ri-av" style="background:${p.col}22;color:${p.col}">${p.av}</div>
+      <div class="ri-name">${p.name}${p.me?' (tú)':''}</div>
+      <div class="ri-pts">${p.pts.toLocaleString()} pts</div>`;
+    list.appendChild(el);
+  });
+  if(myRank>10){
+    const sep=document.createElement('div');
+    sep.style.cssText='text-align:center;font-size:11px;color:#5555AA;padding:4px';
+    sep.textContent='···'; list.appendChild(sep);
+    const me=document.createElement('div');
+    me.className='ri me';
+    me.innerHTML=`<div class="ri-pos" style="color:#7B61FF">#${myRank}</div>
+      <div class="ri-av" style="background:#7B61FF22;color:#7B61FF">TÚ</div>
+      <div class="ri-name">Tú</div>
+      <div class="ri-pts">${(ST.weeklyPts||0).toLocaleString()} pts</div>`;
+    list.appendChild(me);
+  }
+  const now=new Date(), nm=new Date(now);
+  nm.setDate(now.getDate()+(8-now.getDay())%7||7); nm.setHours(0,0,0,0);
+  const diff=nm-now, d=Math.floor(diff/86400000), h=Math.floor((diff%86400000)/3600000);
+  document.getElementById('rk-timer').textContent=`Reinicia en ${d}d ${h}h`;
+}
+
+// ==================== HOW TO ====================
+function showHowTo(){
+  alert(`🌾 FARM 2048 — Cómo jugar\n\n`+
+    `📱 Desliza (móvil) o flechas del teclado para mover tiles.\n\n`+
+    `🔢 NIVELES NUMÉRICOS: Une tiles del mismo número. Llega al objetivo.\n\n`+
+    `🍎 NIVELES DE COSECHA: Une 2 frutas iguales para cosecharlas.\n\n`+
+    `💣 BOMBA: Se genera al hacer combo ×2 seguido. Explota sola en cruz al nacer, eliminando tiles adyacentes y sumando puntos. También puedes tocarla para activarla manualmente.\n\n`+
+    `✨ LUZ: Combo ×4 global. Selecciona un tile y elimina todos iguales.\n\n`+
+    `🌀 MEZCLAR: Baraja el tablero.\n⭐ WILD: Tile comodín que fusiona con cualquiera.\n\n`+
+    `🏆 Gana puntos para subir en el ranking semanal!`);
+}
+
+// ==================== TOAST ====================
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('on');
+  clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('on'),2200);
+}
+
+// ==================== INIT ====================
+refreshMenu();
+</script>
+<script>
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Farm 2048</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#080810">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Farm 2048">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#080810;--panel:#0F0F1E;--panel2:#12121E;--border:#2a2a4a;
+  --purple:#7B61FF;--cyan:#00E5FF;--gold:#FFD700;--green:#4CAF50;
+  --red:#FF4444;--orange:#FF9800;
+}
+body{font-family:'Space Grotesk',sans-serif;background:var(--bg);color:#fff;min-height:100vh;display:flex;justify-content:center;overflow-x:hidden;}
+
+.screen{display:none;width:100%;max-width:420px;min-height:100vh;flex-direction:column;align-items:center;padding:12px;}
+.screen.active{display:flex;}
+
+/* ===== MENU ===== */
+#menu{justify-content:center;gap:16px;}
+.logo{font-size:48px;font-weight:900;letter-spacing:-3px;background:linear-gradient(135deg,#7B61FF,#00E5FF,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-align:center;}
+.logo-farm{font-size:60px;text-align:center;}
+.logo-sub{font-size:11px;color:#5555AA;letter-spacing:3px;text-align:center;margin-top:-6px;}
+.mbtn{width:100%;max-width:260px;padding:13px;border-radius:12px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;border:none;}
+.mbtn-p{background:linear-gradient(135deg,#7B61FF,#5B4BE7);color:#fff;}
+.mbtn-g{background:linear-gradient(135deg,#FFD700,#FF9800);color:#000;}
+.mbtn-s{background:var(--panel);border:1px solid var(--border);color:#aaa;}
+.stats-box{background:var(--panel);border-radius:12px;padding:12px 16px;width:100%;max-width:280px;}
+.stat-row{display:flex;justify-content:space-between;font-size:13px;color:#aaa;padding:3px 0;}
+.stat-val{color:#fff;font-weight:700;}
+
+/* ===== LEVEL MAP ===== */
+#levelmap{padding-top:10px;}
+.lmap-top{width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+.world-lbl{font-size:10px;letter-spacing:2px;color:#5555AA;text-transform:uppercase;margin:10px 0 8px;align-self:flex-start;font-weight:700;}
+.lvls{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;width:100%;}
+.ln{aspect-ratio:1;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;font-weight:900;border:3px solid;cursor:pointer;position:relative;transition:transform .12s;}
+.ln:active{transform:scale(.9);}
+.ln-done{background:#1D4A1D;border-color:#4CAF50;color:#A5D6A7;}
+.ln-cur{background:#3A2A00;border-color:#FFD700;color:#FFD700;animation:pulse 1.5s infinite;}
+.ln-lock{background:#1a1a2a;border-color:#333;color:#444;cursor:default;}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 #FFD70044}50%{box-shadow:0 0 0 6px #FFD70022}}
+.ln-stars{position:absolute;bottom:-11px;font-size:7px;display:flex;gap:1px;}
+
+/* ===== GAME ===== */
+#game{padding:8px;}
+.gtop{width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.gback{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:5px 10px;font-family:inherit;font-size:11px;color:#aaa;cursor:pointer;}
+.gmov{font-size:12px;color:#aaa;} .gmov span{color:#fff;font-weight:700;}
+
+.hud{width:100%;display:flex;gap:6px;margin-bottom:8px;}
+.hbox{flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:5px 8px;text-align:center;}
+.hlbl{font-size:8px;color:#5555AA;letter-spacing:1px;text-transform:uppercase;font-weight:700;}
+.hval{font-size:17px;font-weight:900;}
+
+.goal-panel{width:100%;background:#0A1E0A;border:1px solid #1a3a1a;border-radius:10px;padding:7px 10px;margin-bottom:8px;}
+.goal-lbl{font-size:9px;color:#4CAF50;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;}
+.goal-row{display:flex;align-items:center;gap:6px;}
+.goal-ico{font-size:16px;}
+.goal-info{flex:1;}
+.goal-txt{font-size:11px;color:#aaa;font-weight:700;}
+.goal-bar{height:5px;background:#1a2a1a;border-radius:3px;margin-top:3px;}
+.goal-fill{height:5px;background:#4CAF50;border-radius:3px;transition:width .3s;}
+.goal-done-txt{color:#4CAF50;}
+.goal-items{display:flex;gap:8px;flex-wrap:wrap;}
+.gi{display:flex;align-items:center;gap:4px;}
+.gi-bar{width:36px;height:4px;background:#1a2a1a;border-radius:2px;}
+.gi-fill{height:4px;background:#4CAF50;border-radius:2px;transition:width .3s;}
+
+/* BOARD — el protagonista */
+.board-wrap{width:100%;position:relative;}
+.board{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:6px;
+  background:#0D0D1A;
+  border-radius:14px;
+  padding:8px;
+  border:1px solid var(--border);
+  width:100%;
+}
+.cell{
+  aspect-ratio:1;border-radius:8px;
+  background:#12121E;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:900;
+  position:relative;
+  transition:background .1s;
+  user-select:none;
+}
+.cell.pop{animation:cpop .18s ease;}
+.cell.mrg{animation:cmrg .2s ease;}
+@keyframes cpop{0%{transform:scale(.1)}60%{transform:scale(1.12)}100%{transform:scale(1)}}
+@keyframes cmrg{0%{transform:scale(1)}40%{transform:scale(1.18)}100%{transform:scale(1)}}
+.cell.boom{animation:cboom .35s ease forwards;}
+@keyframes cboom{0%{transform:scale(1)}30%{transform:scale(1.4)}70%{transform:scale(.7);opacity:.5}100%{transform:scale(0);opacity:0}}
+
+/* tile colors */
+.v2  {background:#1E1E3F;color:#C8C8FF;font-size:clamp(15px,5vw,24px);}
+.v4  {background:#252050;color:#A5A0FF;font-size:clamp(15px,5vw,24px);}
+.v8  {background:#2A1060;color:#9D6FFF;font-size:clamp(15px,5vw,24px);}
+.v16 {background:#1A0A6A;color:#7B61FF;font-size:clamp(13px,4.5vw,21px);}
+.v32 {background:#0A1A7A;color:#00C2FF;font-size:clamp(13px,4.5vw,21px);}
+.v64 {background:#002266;color:#00E5FF;font-size:clamp(13px,4vw,19px);}
+.v128{background:#003355;color:#00FFFF;font-size:clamp(11px,3.5vw,17px);}
+.v256{background:#004422;color:#00FF88;font-size:clamp(11px,3.5vw,17px);}
+.v512{background:#1A4400;color:#88FF00;font-size:clamp(10px,3vw,15px);}
+.v1024{background:#443300;color:#FFDD00;font-size:clamp(9px,2.8vw,13px);}
+.v2048{background:#554400;color:#FFD700;font-size:clamp(9px,2.8vw,13px);}
+.vrock{background:#1a1a1a;border:2px solid #444;font-size:clamp(14px,4.5vw,22px);}
+.vbomb{background:#2a0a00;border:2px solid #FF6644;font-size:clamp(18px,5.5vw,28px);cursor:pointer;animation:bombglow 1s infinite;}
+@keyframes bombglow{0%,100%{border-color:#FF6644}50%{border-color:#FF2200;box-shadow:0 0 8px #FF220066}}
+.vfruit{background:var(--panel2);font-size:clamp(18px,5.5vw,28px);}
+.vwild{background:#1a1a00;border:2px solid #FFD700;font-size:clamp(18px,5.5vw,26px);animation:wildglow 1s infinite;}
+@keyframes wildglow{0%,100%{border-color:#FFD700}50%{border-color:#FFF59D;box-shadow:0 0 8px #FFD70066}}
+
+/* overlay ganó/perdió */
+.g-ov{display:none;position:absolute;inset:0;background:rgba(8,8,16,.93);border-radius:14px;flex-direction:column;align-items:center;justify-content:center;gap:10px;z-index:20;}
+.g-ov.show{display:flex;}
+.ov-ico{font-size:44px;}
+.ov-ttl{font-size:24px;font-weight:900;text-align:center;}
+.ov-stars{display:flex;gap:4px;justify-content:center;font-size:22px;}
+.ov-sub{font-size:12px;color:#aaa;text-align:center;padding:0 16px;}
+.ov-btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;}
+.ov-btn{padding:9px 22px;border-radius:10px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;border:none;}
+
+/* combo flash */
+.combo{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,215,0,.96);color:#000;font-size:15px;font-weight:900;padding:6px 16px;border-radius:10px;pointer-events:none;opacity:0;z-index:30;white-space:nowrap;}
+.combo.show{animation:comboAni .9s ease forwards;}
+@keyframes comboAni{0%{opacity:0;transform:translate(-50%,-65%)}15%{opacity:1;transform:translate(-50%,-50%)}80%{opacity:1}100%{opacity:0;transform:translate(-50%,-38%)}}
+
+/* power-ups — aparecen abajo, discretos */
+.pu-row{width:100%;display:flex;gap:6px;margin-top:8px;justify-content:center;min-height:64px;}
+.pu{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:6px 4px;text-align:center;cursor:pointer;font-family:inherit;transition:all .15s;position:relative;flex:1;max-width:90px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;}
+.pu:active{transform:scale(.94);}
+.pu.act{border-color:var(--gold);background:#1a1800;}
+.pu.zero{opacity:.35;cursor:default;}
+.pu-ico{font-size:22px;line-height:1;}
+.pu-name{font-size:9px;color:#aaa;font-weight:700;}
+.pu-cnt{position:absolute;top:3px;right:5px;font-size:9px;color:var(--gold);font-weight:900;}
+.pu-new{animation:puBounce .4s ease;}
+@keyframes puBounce{0%{transform:scale(.5)}60%{transform:scale(1.2)}100%{transform:scale(1)}}
+
+.sel-banner{width:100%;background:#1a1800;border:1px solid var(--gold);border-radius:8px;padding:6px 10px;text-align:center;font-size:11px;color:var(--gold);font-weight:700;margin-top:6px;display:none;}
+.sel-banner.show{display:block;}
+
+/* ranking */
+#ranking{padding:14px;}
+.rk-top{width:100%;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+.rk-ttl{font-size:18px;font-weight:900;}
+.rk-timer{font-size:10px;color:var(--orange);background:#1a0800;border:1px solid #3a2000;border-radius:7px;padding:3px 8px;}
+.rk-list{width:100%;display:flex;flex-direction:column;gap:7px;}
+.ri{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 10px;}
+.ri.me{border-color:var(--purple);background:#0f0f2a;}
+.ri-pos{width:22px;text-align:center;font-size:13px;font-weight:900;}
+.ri-av{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;}
+.ri-name{flex:1;font-size:12px;font-weight:700;}
+.ri-pts{font-size:11px;color:var(--purple);font-weight:700;}
+
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 18px;font-size:12px;font-weight:700;color:#fff;z-index:100;opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap;}
+.toast.on{opacity:1;}
+</style>
+</head>
+<body>
+
+<!-- MENU -->
+<div id="menu" class="screen active">
+  <div class="logo-farm">🌾</div>
+  <div class="logo">Farm 2048</div>
+  <div class="logo-sub">PUZZLE · COSECHA · ESTRATEGIA</div>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;margin-top:8px;">
+    <button class="mbtn mbtn-p" onclick="showScreen('levelmap')">🎮 Jugar</button>
+    <button class="mbtn mbtn-g" onclick="showScreen('ranking')">🏆 Ranking semanal</button>
+    <button class="mbtn mbtn-s" onclick="showHowTo()">📖 Cómo jugar</button>
+  </div>
+  <div class="stats-box" style="margin-top:12px;">
+    <div class="stat-row"><span>Niveles completados</span><span class="stat-val" id="m-lvls">0</span></div>
+    <div class="stat-row"><span>Monedas</span><span class="stat-val" id="m-coins" style="color:var(--gold)">🪙 100</span></div>
+    <div class="stat-row"><span>Puntos totales</span><span class="stat-val" id="m-pts" style="color:var(--purple)">0</span></div>
+  </div>
+</div>
+
+<!-- LEVEL MAP -->
+<div id="levelmap" class="screen">
+  <div class="lmap-top">
+    <button class="gback" onclick="showScreen('menu')">← Menú</button>
+    <span style="font-size:15px;font-weight:900;">Elige nivel</span>
+    <span style="font-size:12px;color:var(--gold);font-weight:700;">🪙 <span id="lm-coins">100</span></span>
+  </div>
+  <div id="lm-body" style="width:100%;"></div>
+</div>
+
+<!-- GAME -->
+<div id="game" class="screen">
+  <div class="gtop">
+    <button class="gback" onclick="askBack()">← Salir</button>
+    <span class="gmov" style="font-size:13px;font-weight:900;" id="g-lvl-name">Nivel 1</span>
+    <span class="gmov">Movs: <span id="g-movs">30</span></span>
+  </div>
+  <div class="hud">
+    <div class="hbox"><div class="hlbl">Score</div><div class="hval" id="g-score">0</div></div>
+    <div class="hbox"><div class="hlbl">Mejor</div><div class="hval" id="g-best">0</div></div>
+    <div class="hbox"><div class="hlbl">Nivel</div><div class="hval" id="g-lvlnum">1</div></div>
+  </div>
+  <div class="goal-panel" id="goal-panel"></div>
+  <div class="board-wrap">
+    <div class="board" id="board"></div>
+    <div class="combo" id="combo"></div>
+    <div class="g-ov" id="g-ov">
+      <div class="ov-ico" id="ov-ico">🏆</div>
+      <div class="ov-ttl" id="ov-ttl">¡Nivel completado!</div>
+      <div class="ov-stars" id="ov-stars">⭐⭐⭐</div>
+      <div class="ov-sub" id="ov-sub"></div>
+      <div class="ov-btns">
+        <button class="ov-btn mbtn-s" onclick="askBack(true)" style="font-family:inherit;">Ver niveles</button>
+        <button class="ov-btn mbtn-s" id="ov-retry" onclick="startLevel(G.lvl)" style="font-family:inherit;">🔄 Reintentar</button>
+        <button class="ov-btn mbtn-p" id="ov-next" onclick="goNextLevel()" style="font-family:inherit;">Siguiente ▶</button>
+      </div>
+    </div>
+  </div>
+  <!-- Power-ups aparecen aquí abajo, solo los que tienes -->
+  <div class="pu-row" id="pu-row"></div>
+  <div class="sel-banner" id="sel-banner">✨ Toca un tile — eliminará todos iguales</div>
+</div>
+
+<!-- RANKING -->
+<div id="ranking" class="screen">
+  <div class="rk-top">
+    <button class="gback" onclick="showScreen('menu')">← Volver</button>
+    <span class="rk-ttl">🏆 Ranking</span>
+    <span class="rk-timer" id="rk-timer">...</span>
+  </div>
+  <div style="font-size:10px;color:#5555AA;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;font-weight:700;">Semana actual · Top 10</div>
+  <div class="rk-list" id="rk-list"></div>
+  <div style="margin-top:14px;background:var(--panel);border-radius:10px;padding:10px;width:100%;font-size:11px;color:#aaa;line-height:1.7;">
+    <div style="font-weight:700;color:var(--gold);margin-bottom:3px;">Premios semanales</div>
+    <div>👑 1° lugar — 500 monedas + corona dorada</div>
+    <div>🥈 2° lugar — 300 monedas</div>
+    <div>🥉 3° lugar — 150 monedas</div>
+    <div>🎁 Top 4–10 — 50 monedas</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ==================== DATOS ====================
+const FRUITS = ['🍎','🍐','🍊','🫐','🍓','🥕','🥦'];
+const FV = {'🍎':1,'🍐':2,'🍊':3,'🫐':4,'🍓':5,'🥕':6,'🥦':8};
+const WORLDS = {1:'🌾 La Granja',2:'🌿 El Huerto',3:'🏪 El Mercado'};
+
+const LEVELS = [
+  {id:1, type:'num', target:64,  moves:60, obs:0, world:1},
+  {id:2, type:'num', target:128, moves:60, obs:0, world:1},
+  {id:3, type:'fruit', fruits:{'🍎':10}, moves:50, obs:0, world:1},
+  {id:4, type:'num', target:128, moves:55, obs:1, world:1},
+  {id:5, type:'fruit', fruits:{'🍎':8,'🍐':6}, moves:55, obs:0, world:1},
+  {id:6, type:'num', target:256, moves:35, obs:2, world:2},
+  {id:7, type:'fruit', fruits:{'🍎':12,'🍊':8}, moves:32, obs:1, world:2},
+  {id:8, type:'num', target:256, moves:30, obs:3, world:2},
+  {id:9, type:'fruit', fruits:{'🍎':10,'🍐':8,'🍊':6}, moves:35, obs:1, world:2},
+  {id:10,type:'num', target:512, moves:40, obs:2, world:2},
+  {id:11,type:'fruit', fruits:{'🍎':15,'🍐':12,'🍓':8}, moves:38, obs:2, world:3},
+  {id:12,type:'num', target:512, moves:35, obs:4, world:3},
+  {id:13,type:'fruit', fruits:{'🍎':10,'🍐':8,'🍊':6,'🫐':5}, moves:40, obs:2, world:3},
+  {id:14,type:'num', target:1024, moves:45, obs:3, world:3},
+  {id:15,type:'fruit', fruits:{'🍎':20,'🍐':15,'🍊':12,'🫐':8,'🍓':6}, moves:50, obs:3, world:3},
+];
+
+// ==================== STATE ====================
+let ST = {coins:100, totalPts:0, weeklyPts:0, stars:{}, pu:{bomb:0,luz:0,remix:0,wild:0}};
+try{ const s=localStorage.getItem('f2048'); if(s) ST=Object.assign(ST,JSON.parse(s)); }catch(e){}
+const save = () => { try{localStorage.setItem('f2048',JSON.stringify(ST));}catch(e){} };
+
+// ==================== GAME STATE ====================
+let G = {}; // grid state durante partida
+
+function newG() {
+  return {
+    grid: Array(4).fill(0).map(()=>Array(4).fill(null)),
+    score: 0,
+    movs: 0,
+    progress: {},  // para frutas
+    lvl: null,
+    activePU: null,
+    selectingLuz: false,
+    over: false
+  };
+}
+
+// ==================== SCREENS ====================
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  if(id==='levelmap') buildLevelMap();
+  if(id==='ranking') buildRanking();
+  if(id==='menu') refreshMenu();
+}
+
+function refreshMenu() {
+  document.getElementById('m-lvls').textContent = Object.keys(ST.stars).length;
+  document.getElementById('m-coins').textContent = '🪙 '+ST.coins;
+  document.getElementById('m-pts').textContent = ST.totalPts.toLocaleString();
+}
+
+// ==================== LEVEL MAP ====================
+function buildLevelMap() {
+  document.getElementById('lm-coins').textContent = ST.coins;
+  const body = document.getElementById('lm-body');
+  body.innerHTML = '';
+  const worlds = {};
+  LEVELS.forEach(l=>{ if(!worlds[l.world]) worlds[l.world]=[]; worlds[l.world].push(l); });
+  Object.keys(worlds).forEach(w => {
+    const wl = document.createElement('div');
+    wl.className='world-lbl'; wl.textContent=WORLDS[w]; body.appendChild(wl);
+    const grid = document.createElement('div');
+    grid.className='lvls';
+    worlds[w].forEach(lvl => {
+      const node = document.createElement('div');
+      node.className='ln';
+      const done = ST.stars[lvl.id]>0;
+      const unlocked = lvl.id===1 || ST.stars[lvl.id-1]>0;
+      if(done) {
+        node.classList.add('ln-done');
+        node.textContent = lvl.type==='fruit'?'🌿':lvl.id;
+        const sd=document.createElement('div'); sd.className='ln-stars';
+        sd.innerHTML=[1,2,3].map(s=>s<=(ST.stars[lvl.id]||0)?'⭐':'☆').join('');
+        node.appendChild(sd);
+        node.onclick=()=>startLevel(lvl);
+      } else if(unlocked) {
+        node.classList.add('ln-cur');
+        node.textContent = lvl.type==='fruit'?'🌿':lvl.id;
+        node.onclick=()=>startLevel(lvl);
+      } else {
+        node.classList.add('ln-lock');
+        node.textContent='🔒';
+      }
+      grid.appendChild(node);
+    });
+    body.appendChild(grid);
+  });
+}
+
+// ==================== START LEVEL ====================
+function startLevel(lvl) {
+  G = newG();
+  G.lvl = lvl;
+  G.movs = lvl.moves;
+  if(lvl.type==='fruit') Object.keys(lvl.fruits).forEach(f=>G.progress[f]=0);
+
+  // Board inicial con obstáculos
+  let obs = lvl.obs||0;
+  while(obs>0){
+    const r=rand(4),c=rand(4);
+    if(!G.grid[r][c]){G.grid[r][c]={t:'rock'};obs--;}
+  }
+  spawnTile(); spawnTile();
+  if(lvl.type==='fruit'){spawnFruit();spawnFruit();}
+
+  document.getElementById('g-lvl-name').textContent='Nivel '+lvl.id;
+  document.getElementById('g-lvlnum').textContent=lvl.id;
+  document.getElementById('g-best').textContent = (ST.totalPts||0).toLocaleString();
+  // Movimientos: solo en cosecha. Numéricos = ilimitado
+  const movsEl = document.getElementById('g-movs');
+  if(lvl.type==='num'){
+    movsEl.textContent = '∞';
+    movsEl.parentElement.style.color='#5555AA';
+  } else {
+    movsEl.textContent = lvl.moves;
+    movsEl.parentElement.style.color='';
+  }
+  document.getElementById('g-ov').classList.remove('show');
+  document.getElementById('sel-banner').classList.remove('show');
+  G.activePU=null; G.selectingLuz=false;
+
+  renderAll();
+  showScreen('game');
+  bindInput();
+}
+
+const rand = n => Math.floor(Math.random()*n);
+
+function empties() {
+  const e=[];
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) if(!G.grid[r][c]) e.push([r,c]);
+  return e;
+}
+
+function spawnTile() {
+  const e=empties(); if(!e.length) return null;
+  const [r,c]=e[rand(e.length)];
+  // En niveles de fruta mezclar frutas y números
+  if(G.lvl.type==='fruit' && Math.random()<0.5) {
+    const fruits=Object.keys(G.lvl.fruits);
+    G.grid[r][c]={t:'fruit',f:fruits[rand(fruits.length)],isNew:true};
+  } else {
+    G.grid[r][c]={t:'num',v:Math.random()<0.85?2:4,isNew:true};
+  }
+  return [r,c];
+}
+
+function spawnFruit() {
+  const e=empties(); if(!e.length) return null;
+  const [r,c]=e[rand(e.length)];
+  const fruits=Object.keys(G.lvl.fruits);
+  G.grid[r][c]={t:'fruit',f:fruits[rand(fruits.length)],isNew:true};
+  return [r,c];
+}
+
+// ==================== RENDER ====================
+function renderAll() {
+  renderBoard();
+  renderGoal();
+  renderHUD();
+  renderPowerups();
+}
+
+function renderBoard(newCells, mergeCells) {
+  const board=document.getElementById('board');
+  board.innerHTML='';
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) {
+    const cell=document.createElement('div');
+    cell.className='cell';
+    cell.dataset.r=r; cell.dataset.c=c;
+    const tile=G.grid[r][c];
+
+    if(!tile){
+      // vacío
+    } else if(tile.t==='rock'){
+      cell.classList.add('vrock'); cell.textContent='🪨';
+    } else if(tile.t==='bomb'){
+      cell.classList.add('vbomb'); cell.textContent='💣';
+      cell.title='Toca para explotar';
+      // toque directo sobre bomba también la activa
+      cell.onclick=(e)=>{ e.stopPropagation(); manualBomb(r,c); };
+    } else if(tile.t==='num'){
+      const v=Math.min(tile.v,2048);
+      cell.classList.add('v'+v);
+      cell.textContent=tile.v;
+    } else if(tile.t==='fruit'){
+      cell.classList.add('vfruit');
+      cell.textContent=tile.f;
+      if(G.selectingLuz){
+        cell.style.outline='2px solid #FFD700';
+        cell.style.cursor='pointer';
+        cell.onclick=(e)=>{ e.stopPropagation(); doLuz(r,c); };
+      }
+    } else if(tile.t==='wild'){
+      cell.classList.add('vwild'); cell.textContent='⭐';
+    }
+
+    // Si seleccionando luz, todos los tiles son clickeables
+    if(G.selectingLuz && tile && tile.t==='num'){
+      cell.style.outline='2px solid #FFD700';
+      cell.style.cursor='pointer';
+      cell.onclick=(e)=>{ e.stopPropagation(); doLuz(r,c); };
+    }
+    if(G.activePU==='bomb-manual' && tile && tile.t!=='rock'){
+      cell.style.cursor='crosshair';
+    }
+
+    const isNew = newCells&&newCells.some(p=>p[0]===r&&p[1]===c);
+    const isMrg = mergeCells&&mergeCells.some(p=>p[0]===r&&p[1]===c);
+    if(isNew&&tile) cell.classList.add('pop');
+    else if(isMrg) cell.classList.add('mrg');
+
+    board.appendChild(cell);
+  }
+}
+
+function renderGoal() {
+  const panel=document.getElementById('goal-panel');
+  const lvl=G.lvl;
+  if(lvl.type==='num'){
+    const max=getMax();
+    const pct=Math.min(100, (Math.log2(max||1)/Math.log2(lvl.target))*100);
+    panel.innerHTML=`<div class="goal-lbl">META NUMÉRICA</div>
+      <div class="goal-row">
+        <div class="goal-ico">${lvl.target>=512?'🔥':'⬆️'}</div>
+        <div class="goal-info">
+          <div class="goal-txt ${max>=lvl.target?'goal-done-txt':''}">Mayor tile: ${max||0} / ${lvl.target}${max>=lvl.target?' ✓':''}</div>
+          <div class="goal-bar"><div class="goal-fill" style="width:${pct}%"></div></div>
+        </div>
+      </div>`;
+  } else {
+    const items=Object.keys(lvl.fruits).map(f=>{
+      const need=lvl.fruits[f], have=Math.min(G.progress[f]||0,need);
+      const pct=Math.min(100,(have/need)*100);
+      const done=have>=need;
+      return `<div class="gi">
+        <span style="font-size:16px">${f}</span>
+        <div>
+          <div style="font-size:10px;font-weight:700;color:${done?'#4CAF50':'#aaa'}">${have}/${need}${done?' ✓':''}</div>
+          <div class="gi-bar"><div class="gi-fill" style="width:${pct}%"></div></div>
+        </div>
+      </div>`;
+    }).join('');
+    panel.innerHTML=`<div class="goal-lbl">COSECHA</div><div class="goal-items">${items}</div>`;
+  }
+}
+
+function renderHUD() {
+  document.getElementById('g-score').textContent=G.score.toLocaleString();
+  const movsEl=document.getElementById('g-movs');
+  if(G.lvl && G.lvl.type==='num'){
+    movsEl.textContent='∞';
+    movsEl.style.color='#5555AA';
+  } else {
+    movsEl.textContent=G.movs;
+    movsEl.style.color=G.movs<=5?'#FF4444':'';
+  }
+}
+
+function renderPowerups() {
+  const row=document.getElementById('pu-row');
+  row.innerHTML='';
+  const defs=[
+    {id:'bomb',ico:'💣',name:'Bomba'},
+    {id:'luz',ico:'✨',name:'Luz'},
+    {id:'remix',ico:'🌀',name:'Mezclar'},
+    {id:'wild',ico:'⭐',name:'Wild'},
+  ];
+  defs.forEach(d=>{
+    const cnt=ST.pu[d.id]||0;
+    const btn=document.createElement('div');
+    btn.className='pu'+(cnt===0?' zero':'')+(G.activePU===d.id?' act':'');
+    btn.id='pu-'+d.id;
+    btn.innerHTML=`<span class="pu-cnt">${cnt}</span><span class="pu-ico">${d.ico}</span><span class="pu-name">${d.name}</span>`;
+    if(cnt>0) btn.onclick=()=>activatePU(d.id);
+    row.appendChild(btn);
+  });
+}
+
+function getMax() {
+  let m=0;
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++){
+    const t=G.grid[r][c];
+    if(t&&t.t==='num'&&t.v>m) m=t.v;
+  }
+  return m;
+}
+
+// ==================== MOVE ENGINE ====================
+function move(dir) {
+  if(G.over) return;
+  if(G.movs<=0) return;
+  if(G.selectingLuz) return;
+  if(G.activePU==='bomb-manual') return;
+
+  const prevGrid=G.grid.map(r=>r.map(c=>c?{...c}:null));
+  let moved=false, mergePos=[], comboTotal=0;
+
+  // helper: deslizar una fila hacia la izquierda
+  const slideLeft=(row)=>{
+    // separar obstáculos
+    const rocks={};
+    row.forEach((t,i)=>{ if(t&&(t.t==='rock')) rocks[i]=t; });
+    let arr=row.filter(t=>t&&t.t!=='rock');
+    let rowMerges=[], rowCombo=0;
+
+    for(let i=0;i<arr.length-1;i++){
+      const a=arr[i],b=arr[i+1];
+      if(!a||!b) continue;
+      // num + num
+      if(a.t==='num'&&b.t==='num'&&a.v===b.v){
+        const nv=a.v*2;
+        G.score+=nv; comboTotal++; rowCombo++;
+        let nt={t:'num',v:nv,isMrg:true};
+        // Combo ≥2 fusiones en esta fila → genera bomba
+        if(rowCombo>=2){
+          nt={t:'bomb',v:nv,isMrg:true};
+          showCombo('💣 Bomba generada!');
+        }
+        arr[i]=nt; arr.splice(i+1,1); rowMerges.push(i); i--;
+      }
+      // fruit + fruit
+      else if(a.t==='fruit'&&b.t==='fruit'&&a.f===b.f){
+        const fv=FV[a.f]||1;
+        G.score+=fv*10; comboTotal++; rowCombo++;
+        G.progress[a.f]=(G.progress[a.f]||0)+1;
+        let nt={t:'fruit',f:a.f,isMrg:true};
+        if(rowCombo>=3){
+          nt={t:'bomb',v:fv*8,isMrg:true};
+          showCombo('💣 Bomba de cosecha!');
+        } else if(rowCombo>=2){
+          nt={t:'bomb',v:fv*4,isMrg:true};
+          showCombo('💣 Bomba generada!');
+        }
+        arr[i]=nt; arr.splice(i+1,1); rowMerges.push(i); i--;
+      }
+      // wild fusiona con cualquiera
+      else if(a.t==='wild'||b.t==='wild'){
+        const base=a.t==='wild'?b:a;
+        G.score+=(base.t==='num'?base.v:(FV[base.f]||1)*10);
+        comboTotal++;
+        arr[i]={...base,isMrg:true}; arr.splice(i+1,1); rowMerges.push(i); i--;
+      }
+    }
+    // rellenar con nulls y reinsertar rocas
+    while(arr.length<4-Object.keys(rocks).length) arr.push(null);
+    Object.keys(rocks).sort((a,b)=>a-b).forEach(i=>arr.splice(+i,0,rocks[i]));
+    while(arr.length<4) arr.push(null);
+    return {arr:arr.slice(0,4),merges:rowMerges};
+  };
+
+  const rotate=(g)=>g[0].map((_,i)=>g.map(r=>r[i]));
+
+  let g=G.grid.map(r=>[...r]);
+  let allMerges=[];
+
+  if(dir==='left'){
+    g=g.map((row,r)=>{const{arr,merges}=slideLeft(row);merges.forEach(c=>allMerges.push([r,c]));return arr;});
+  } else if(dir==='right'){
+    g=g.map((row,r)=>{const{arr,merges}=slideLeft([...row].reverse());merges.forEach(c=>allMerges.push([r,3-c]));return arr.reverse();});
+  } else if(dir==='up'){
+    let tg=rotate(g);
+    tg=tg.map((row,r)=>{const{arr,merges}=slideLeft(row);merges.forEach(c=>allMerges.push([c,r]));return arr;});
+    g=rotate(tg);
+  } else {
+    let tg=rotate(g);
+    tg=tg.map((row,r)=>{const{arr,merges}=slideLeft([...row].reverse());merges.forEach(c=>allMerges.push([3-c,r]));return arr.reverse();});
+    g=rotate(tg);
+  }
+
+  // Detectar si realmente movió algo
+  outer: for(let r=0;r<4;r++) for(let c=0;c<4;c++){
+    const o=prevGrid[r][c],n=g[r][c];
+    if(JSON.stringify(o)!==JSON.stringify(n)){moved=true;break outer;}
+  }
+  if(!moved) return;
+
+  G.grid=g;
+  G.movs--;
+
+  // Spawn tile nuevo
+  const newCells=[];
+  const np=spawnTile(); if(np) newCells.push(np);
+  if(G.lvl.type==='fruit'&&Math.random()<0.35){const fp=spawnFruit();if(fp) newCells.push(fp);}
+
+  // Combo ≥2 globales → recompensar luz
+  if(comboTotal>=4){
+    gainPU('luz'); showCombo('✨ COMBO ×'+comboTotal+' → Luz ganada!');
+  } else if(comboTotal>=2){
+    showCombo('🔥 COMBO ×'+comboTotal);
+  }
+
+  renderBoard(newCells, allMerges);
+  renderGoal();
+  renderHUD();
+  renderPowerups();
+
+  // Auto-explotar bombas adyacentes a la fusión que las creó
+  const bombs=findBombs();
+  if(bombs.length){
+    setTimeout(()=>autoBombs(bombs, allMerges), 300);
+  } else {
+    afterMove();
+  }
+}
+
+function findBombs(){
+  const b=[];
+  for(let r=0;r<4;r++) for(let c=0;c<4;c++) if(G.grid[r][c]&&G.grid[r][c].t==='bomb') b.push([r,c]);
+  return b;
+}
+
+function autoBombs(bombs, triggerMerges){
+  if(!bombs.length){ afterMove(); return; }
+  let totalPts=0, count=0;
+  bombs.forEach(([r,c])=>{
+    if(!G.grid[r][c]||G.grid[r][c].t!=='bomb') return;
+    const bval=G.grid[r][c].v||16;
+    G.grid[r][c]=null;
+    // Explotar en cruz: arriba, abajo, izq, der
+    [[r-1,c],[r+1,c],[r,c-1],[r,c+1]].forEach(([nr,nc])=>{
+      if(nr<0||nr>=4||nc<0||nc>=4) return;
+      const t=G.grid[nr][nc];
+      if(!t||t.t==='rock') return;
+      if(t.t==='num') totalPts+=t.v;
+      else if(t.t==='fruit'){ totalPts+=FV[t.f]*5; G.progress[t.f]=(G.progress[t.f]||0)+1; }
+      G.grid[nr][nc]=null;
+    });
+    totalPts+=bval; count++;
+  });
+  G.score+=totalPts;
+  showCombo('💥 '+(count>1?'×'+count+' BOMBAS':'BOMBA')+' +'+totalPts+' pts');
+
+  // Rellenar
+  const newCells=[];
+  const np=spawnTile(); if(np) newCells.push(np);
+
+  renderBoard(newCells,[]);
+  renderGoal();
+  renderHUD();
+
+  // ¿Quedaron más bombas (en cadena)?
+  const more=findBombs();
+  if(more.length){
+    setTimeout(()=>autoBombs(more,[]),350);
+  } else {
+    afterMove();
+  }
+}
+
+function afterMove(){
+  renderPowerups();
+  save();
+  checkWin();
+}
+
+// ==================== WIN / LOSE ====================
+function checkWin(){
+  if(G.over) return;
+  const lvl=G.lvl;
+  let won=false;
+  if(lvl.type==='num') won=getMax()>=lvl.target;
+  else won=Object.keys(lvl.fruits).every(f=>(G.progress[f]||0)>=lvl.fruits[f]);
+  // Victoria siempre tiene prioridad
+  if(won){ doWin(); return; }
+  // Movimientos solo limitan niveles de COSECHA
+  if(lvl.type==='fruit' && G.movs<=0){ doLose(); return; }
+  // Verificar bloqueo real (tablero lleno sin fusiones posibles)
+  setTimeout(()=>{
+    if(G.over) return;
+    if(lvl.type==='fruit' && G.movs<=0){ doLose(); return; }
     if(!canMove()){ doLose(); }
   },400);
 }
